@@ -2,56 +2,70 @@ package antispam
 
 import (
 	"log"
+	"math"
 	"net/http"
+	"sync"
 	"time"
 )
 
+const BlockTime = 5
+
 type counters struct {
-	Count uint64
-	Exp   uint64
+	Count      uint64
+	Expiration uint64
 }
 
 func (c *counters) increment() {
-	if c.Count < 18446744073709551615 {
+	if c.Count < math.MaxUint64 {
 		c.Count++
 	}
-	if c.Exp < 18446744073709551585 {
-		c.Exp += 30
+	if c.Expiration <= math.MaxUint64-BlockTime {
+		c.Expiration += BlockTime
 	}
 }
 
 func Wrap(next http.Handler, blockFunc func(w http.ResponseWriter, r *http.Request)) http.Handler {
-	var requestList map[string]*counters
+	var (
+		mu          sync.Mutex
+		requestList = make(map[string]*counters)
+	)
+
+	go func() {
+		for {
+			time.Sleep(BlockTime * time.Second)
+			mu.Lock()
+			now := uint64(time.Now().Unix())
+			for ip, c := range requestList {
+				if c.Expiration < now {
+					delete(requestList, ip)
+				}
+			}
+			mu.Unlock()
+		}
+	}()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if nil == requestList {
-			requestList = make(map[string]*counters)
+		ip := r.Header.Get("X-Real-Ip")
+		if ip == "" {
+			ip = r.Header.Get("X-Forwarded-For")
+		}
+		if ip == "" {
+			ip = r.RemoteAddr
 		}
 
-		ip := r.Header.Get("X-Real-Ip")
-
+		mu.Lock()
 		if _, ok := requestList[ip]; !ok {
 			requestList[ip] = &counters{
-				0,
-				uint64(time.Now().Unix()),
+				Count:      0,
+				Expiration: uint64(time.Now().Unix()) + BlockTime,
 			}
-			go func() {
-				for {
-					time.Sleep(30 * time.Second)
-					if requestList[ip].Exp < uint64(time.Now().Unix()) {
-						delete(requestList, ip)
-						break
-					}
-				}
-			}()
 		}
-
 		requestList[ip].increment()
+		mu.Unlock()
 
 		if requestList[ip].Count > 3 {
 			log.Println("Block "+ip+" ", requestList[ip].Count)
 			blockFunc(w, r)
-
 			return
 		}
 

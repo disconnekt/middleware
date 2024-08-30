@@ -4,29 +4,89 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
+	"time"
 )
 
-func TestWrap(t *testing.T) {
-	t.Parallel()
+func TestWrap_AllowsRequests(t *testing.T) {
+	allowed := true
 
-	const allowRequests = 3
-	var i, j int
-
-	nh := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		i++
-		assert.LessOrEqual(t, i, allowRequests, "Antispam allow more than possible requests.")
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 	})
 
-	h := Wrap(nh, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Location", "/thankyou.html")
-		w.WriteHeader(http.StatusFound)
-	})
-
-	for j = 0; j < allowRequests+1; j++ {
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "http://localhost/", nil))
+	blockFunc := func(w http.ResponseWriter, r *http.Request) {
+		allowed = false
+		w.WriteHeader(http.StatusTooManyRequests)
 	}
 
-	assert.GreaterOrEqual(t, j, allowRequests+1, "Antispam not checked.")
+	handler := Wrap(nextHandler, blockFunc)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/foo", nil)
+	req.Header.Set("X-Real-Ip", "127.0.0.1")
+	rec := httptest.NewRecorder()
+
+	for i := 0; i < 3; i++ {
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", rec.Code)
+		}
+		if !allowed {
+			t.Fatal("Request was blocked unexpectedly")
+		}
+	}
+}
+
+func TestWrap_BlocksAfterLimit(t *testing.T) {
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	blockFunc := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+
+	handler := Wrap(nextHandler, blockFunc)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/foo", nil)
+	req.Header.Set("X-Real-Ip", "127.0.0.1")
+	rec := httptest.NewRecorder()
+
+	for i := 0; i < 4; i++ {
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if i < 3 && rec.Code != http.StatusOK {
+			t.Fatalf("Expected status 200, got %d", rec.Code)
+		}
+		if i == 3 && rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("Expected status 429 (Too Many Requests), got %d", rec.Code)
+		}
+	}
+}
+
+func TestWrap_ClearsExpiredEntries(t *testing.T) {
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	blockFunc := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+
+	handler := Wrap(nextHandler, blockFunc)
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/foo", nil)
+	req.Header.Set("X-Real-Ip", "127.0.0.1")
+	rec := httptest.NewRecorder()
+
+	for i := 0; i < 3; i++ {
+		handler.ServeHTTP(rec, req)
+	}
+
+	time.Sleep((BlockTime*5)*time.Second + time.Millisecond*10)
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Expected status 200 after expiration, got %d", rec.Code)
+	}
 }
