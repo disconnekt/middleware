@@ -4,6 +4,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,8 +32,11 @@ func Wrap(next http.Handler, blockFunc func(w http.ResponseWriter, r *http.Reque
 	)
 
 	go func() {
+		ticker := time.NewTicker(BlockTime * time.Second)
+		defer ticker.Stop()
+
 		for {
-			time.Sleep(BlockTime * time.Second)
+			<-ticker.C
 			mu.Lock()
 			now := uint64(time.Now().Unix())
 			for ip, c := range requestList {
@@ -48,23 +52,28 @@ func Wrap(next http.Handler, blockFunc func(w http.ResponseWriter, r *http.Reque
 		ip := r.Header.Get("X-Real-Ip")
 		if ip == "" {
 			ip = r.Header.Get("X-Forwarded-For")
+			if ip != "" {
+				ip = strings.Split(ip, ",")[0]
+			}
 		}
 		if ip == "" {
 			ip = r.RemoteAddr
 		}
 
 		mu.Lock()
-		if _, ok := requestList[ip]; !ok {
-			requestList[ip] = &counters{
+		counter, ok := requestList[ip]
+		if !ok {
+			counter = &counters{
 				Count:      0,
 				Expiration: uint64(time.Now().Unix()) + BlockTime,
 			}
+			requestList[ip] = counter
 		}
-		requestList[ip].increment()
+		counter.increment()
 		mu.Unlock()
 
-		if requestList[ip].Count > 3 {
-			log.Println("Block "+ip+" ", requestList[ip].Count)
+		if counter.Count > 3 {
+			log.Printf("Blocking IP: %s, Count: %d, BlockTime: %d seconds\n", ip, counter.Count, BlockTime)
 			blockFunc(w, r)
 			return
 		}
