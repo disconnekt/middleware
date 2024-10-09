@@ -13,24 +13,23 @@ import (
 const BlockTime = 5
 
 type counters struct {
-	Count      uint64
-	Expiration uint64
+	count      uint64
+	expiration uint64
 }
 
-func (c *counters) increment() {
-	if c.Count < math.MaxUint64 {
-		c.Count++
-	}
-	if c.Expiration <= math.MaxUint64-BlockTime {
-		c.Expiration += BlockTime
-	}
+type middleware struct {
+	list map[string]*counters
+	mu   sync.Mutex
 }
 
-func WrapFiber(next fiber.Handler, blockFunc fiber.Handler) fiber.Handler {
-	var (
-		mu          sync.Mutex
-		requestList = make(map[string]*counters)
-	)
+var instance *middleware
+
+func getInstance() *middleware {
+	if instance != nil {
+		return instance
+	}
+
+	instance = &middleware{list: make(map[string]*counters)}
 
 	go func() {
 		ticker := time.NewTicker(BlockTime * time.Second)
@@ -38,17 +37,51 @@ func WrapFiber(next fiber.Handler, blockFunc fiber.Handler) fiber.Handler {
 
 		for {
 			<-ticker.C
-			mu.Lock()
+			instance.mu.Lock()
 			now := uint64(time.Now().Unix())
-			for ip, c := range requestList {
-				if c.Expiration < now {
-					delete(requestList, ip)
+			for ip, c := range instance.list {
+				if c.expiration < now {
+					delete(instance.list, ip)
 				}
 			}
-			mu.Unlock()
+			instance.mu.Unlock()
 		}
 	}()
 
+	return instance
+}
+
+func (m *middleware) validRequest(ip string) bool {
+	m.mu.Lock()
+	counter, ok := m.list[ip]
+	if !ok {
+		counter = &counters{
+			count:      0,
+			expiration: uint64(time.Now().Unix()) + BlockTime,
+		}
+		m.list[ip] = counter
+	}
+	counter.increment()
+	m.mu.Unlock()
+
+	if counter.count > 3 {
+		log.Printf("Blocking IP: %s, count: %d, BlockTill: %d \n", ip, counter.count, counter.expiration)
+		return false
+	}
+
+	return true
+}
+
+func (c *counters) increment() {
+	if c.count < math.MaxUint64 {
+		c.count++
+	}
+	if c.expiration <= math.MaxUint64-BlockTime {
+		c.expiration += BlockTime
+	}
+}
+
+func WrapFiber(next fiber.Handler, blockFunc fiber.Handler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		ip := c.Get("X-Real-Ip")
 		if ip == "" {
@@ -61,23 +94,10 @@ func WrapFiber(next fiber.Handler, blockFunc fiber.Handler) fiber.Handler {
 			ip = c.IP()
 		}
 
-		mu.Lock()
-		counter, ok := requestList[ip]
-		if !ok {
-			counter = &counters{
-				Count:      0,
-				Expiration: uint64(time.Now().Unix()) + BlockTime,
-			}
-			requestList[ip] = counter
-		}
-		counter.increment()
-		mu.Unlock()
-
-		if counter.Count > 3 {
-			log.Printf("Blocking IP: %s, Count: %d, BlockTime: %d seconds\n", ip, counter.Count, BlockTime)
-			return blockFunc(c)
+		if getInstance().validRequest(ip) {
+			return next(c)
 		}
 
-		return next(c)
+		return blockFunc(c)
 	}
 }
