@@ -10,7 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-const BlockTime = 5
+const BlockTime = 10
 
 type counters struct {
 	count      uint64
@@ -25,28 +25,26 @@ type middleware struct {
 var instance *middleware
 
 func getInstance() *middleware {
-	if instance != nil {
-		return instance
-	}
+	if instance == nil {
+		instance = &middleware{list: make(map[string]*counters)}
 
-	instance = &middleware{list: make(map[string]*counters)}
+		go func() {
+			ticker := time.NewTicker(BlockTime * time.Second)
+			defer ticker.Stop()
 
-	go func() {
-		ticker := time.NewTicker(BlockTime * time.Second)
-		defer ticker.Stop()
-
-		for {
-			<-ticker.C
-			instance.mu.Lock()
-			now := uint64(time.Now().Unix())
-			for ip, c := range instance.list {
-				if c.expiration < now {
-					delete(instance.list, ip)
+			for {
+				<-ticker.C
+				instance.mu.Lock()
+				now := uint64(time.Now().Unix())
+				for ip, c := range instance.list {
+					if c.expiration < now {
+						delete(instance.list, ip)
+					}
 				}
+				instance.mu.Unlock()
 			}
-			instance.mu.Unlock()
-		}
-	}()
+		}()
+	}
 
 	return instance
 }
@@ -65,7 +63,11 @@ func (m *middleware) validRequest(ip string) bool {
 	m.mu.Unlock()
 
 	if counter.count > 3 {
-		log.Printf("Blocking IP: %s, count: %d, BlockTill: %d \n", ip, counter.count, counter.expiration)
+		log.Printf("Blocking IP: %s, count: %d, Block Expires: %s \n",
+			ip,
+			counter.count,
+			time.Unix(int64(counter.expiration), 0).UTC().Format(time.RFC3339))
+
 		return false
 	}
 
