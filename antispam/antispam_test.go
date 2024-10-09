@@ -5,30 +5,34 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 func TestWrap_AllowsRequests(t *testing.T) {
 	allowed := true
 
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	blockFunc := func(w http.ResponseWriter, r *http.Request) {
-		allowed = false
-		w.WriteHeader(http.StatusTooManyRequests)
+	nextHandler := func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
 	}
 
-	handler := Wrap(nextHandler, blockFunc)
+	blockFunc := func(c *fiber.Ctx) error {
+		allowed = false
+		return c.SendStatus(fiber.StatusTooManyRequests)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/foo", nil)
-	req.Header.Set("X-Real-Ip", "127.0.0.1")
-	rec := httptest.NewRecorder()
+	handler := WrapFiber(nextHandler, blockFunc)
+
+	app := fiber.New()
+	app.Get("/foo", handler)
 
 	for i := 0; i < 3; i++ {
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("Expected status 200, got %d", rec.Code)
+		req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+		req.Header.Set("X-Real-Ip", "127.0.0.1")
+		resp, _ := app.Test(req)
+
+		if resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("Expected status 200, got %d", resp.StatusCode)
 		}
 		if !allowed {
 			t.Fatal("Request was blocked unexpectedly")
@@ -37,56 +41,60 @@ func TestWrap_AllowsRequests(t *testing.T) {
 }
 
 func TestWrap_BlocksAfterLimit(t *testing.T) {
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	blockFunc := func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
+	nextHandler := func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
 	}
 
-	handler := Wrap(nextHandler, blockFunc)
+	blockFunc := func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusTooManyRequests)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/foo", nil)
-	req.Header.Set("X-Real-Ip", "127.0.0.1")
-	rec := httptest.NewRecorder()
+	handler := WrapFiber(nextHandler, blockFunc)
+
+	app := fiber.New()
+	app.Get("/foo", handler)
 
 	for i := 0; i < 4; i++ {
-		rec = httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if i < 3 && rec.Code != http.StatusOK {
-			t.Fatalf("Expected status 200, got %d", rec.Code)
+		req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+		req.Header.Set("X-Real-Ip", "127.0.0.1")
+		resp, _ := app.Test(req)
+
+		if i < 3 && resp.StatusCode != fiber.StatusOK {
+			t.Fatalf("Expected status 200, got %d", resp.StatusCode)
 		}
-		if i == 3 && rec.Code != http.StatusTooManyRequests {
-			t.Fatalf("Expected status 429 (Too Many Requests), got %d", rec.Code)
+		if i == 3 && resp.StatusCode != fiber.StatusTooManyRequests {
+			t.Fatalf("Expected status 429 (Too Many Requests), got %d", resp.StatusCode)
 		}
 	}
 }
 
 func TestWrap_ClearsExpiredEntries(t *testing.T) {
-	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	blockFunc := func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
+	nextHandler := func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusOK)
 	}
 
-	handler := Wrap(nextHandler, blockFunc)
+	blockFunc := func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusTooManyRequests)
+	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/foo", nil)
-	req.Header.Set("X-Real-Ip", "127.0.0.1")
-	rec := httptest.NewRecorder()
+	handler := WrapFiber(nextHandler, blockFunc)
+
+	app := fiber.New()
+	app.Get("/foo", handler)
 
 	for i := 0; i < 3; i++ {
-		handler.ServeHTTP(rec, req)
+		req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+		req.Header.Set("X-Real-Ip", "127.0.0.1")
+		app.Test(req)
 	}
 
 	time.Sleep((BlockTime*5)*time.Second + time.Millisecond*10)
 
-	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Expected status 200 after expiration, got %d", rec.Code)
+	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+	req.Header.Set("X-Real-Ip", "127.0.0.1")
+	resp, _ := app.Test(req)
+
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("Expected status 200 after expiration, got %d", resp.StatusCode)
 	}
 }

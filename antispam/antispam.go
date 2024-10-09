@@ -3,10 +3,11 @@ package antispam
 import (
 	"log"
 	"math"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 const BlockTime = 5
@@ -25,7 +26,7 @@ func (c *counters) increment() {
 	}
 }
 
-func Wrap(next http.Handler, blockFunc func(w http.ResponseWriter, r *http.Request)) http.Handler {
+func WrapFiber(next fiber.Handler, blockFunc fiber.Handler) fiber.Handler {
 	var (
 		mu          sync.Mutex
 		requestList = make(map[string]*counters)
@@ -48,16 +49,16 @@ func Wrap(next http.Handler, blockFunc func(w http.ResponseWriter, r *http.Reque
 		}
 	}()
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.Header.Get("X-Real-Ip")
+	return func(c *fiber.Ctx) error {
+		ip := c.Get("X-Real-Ip")
 		if ip == "" {
-			ip = r.Header.Get("X-Forwarded-For")
+			ip = c.Get("X-Forwarded-For")
 			if ip != "" {
 				ip = strings.Split(ip, ",")[0]
 			}
 		}
 		if ip == "" {
-			ip = r.RemoteAddr
+			ip = c.IP()
 		}
 
 		mu.Lock()
@@ -74,10 +75,9 @@ func Wrap(next http.Handler, blockFunc func(w http.ResponseWriter, r *http.Reque
 
 		if counter.Count > 3 {
 			log.Printf("Blocking IP: %s, Count: %d, BlockTime: %d seconds\n", ip, counter.Count, BlockTime)
-			blockFunc(w, r)
-			return
+			return blockFunc(c)
 		}
 
-		next.ServeHTTP(w, r)
-	})
+		return next(c)
+	}
 }
