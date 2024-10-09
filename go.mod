@@ -1,4 +1,4 @@
-module github.com/disconnekt/middleware/v1
+module github.com/disconnekt/middleware
 
 go 1.22.5
 
